@@ -37,17 +37,18 @@ function Get-Signature {
 Clear-Host
 
 # ===================== BANNER =====================
-Write-Host "";
-Write-Host "";
-Write-Host -ForegroundColor Cyan "   ██████╗  ██████╗ ██╗  ██╗██████╗ ███████╗███████╗ ██████╗ █████╗ ███╗   ███╗"
-Write-Host -ForegroundColor Cyan "   ██╔══██╗██╔═══██╗██║ ██╔╝██╔══██╗██╔════╝██╔════╝██╔═══██╗██╔══██╗████╗ ████║"
-Write-Host -ForegroundColor Cyan "   ██████╔╝██║   ██║█████╔╝ ██████╔╝█████╗  █████╗  ██║   ██║███████║██╔████╔██║"
-Write-Host -ForegroundColor Cyan "   ██╔═══╝ ██║   ██║██╔═██╗ ██╔═══╝ ██╔══╝  ██╔══╝  ██║   ██║██╔══██║██║╚██╔╝██║"
-Write-Host -ForegroundColor Cyan "   ██║     ╚██████╔╝██║  ██╗██║     ███████╗███████╗╚██████╔╝██║  ██║██║ ╚═╝ ██║"
-Write-Host -ForegroundColor Cyan "   ╚═╝      ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚══════╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝     ╚═╝"
-Write-Host "";
-Write-Host -ForegroundColor Magenta "           Poker Bam Parser - DFIR & BAM Analysis Tool";
-Write-Host "";
+Clear-Host
+
+Write-Host "__________       __                  __________                  __________                                   " -ForegroundColor Cyan
+Write-Host "\______   \____ |  | __ ___________  \______   \_____    _____   \______   \_____ _______  ______ ___________ " -ForegroundColor Cyan
+Write-Host " |     ___/  _ \|  |/ // __ \_  __ \  |    |  _/\__  \  /     \   |     ___/\__  \\_  __ \/  ___// __ \_  __ \" -ForegroundColor Cyan
+Write-Host " |    |  (  <_> )    <\  ___/|  | \/  |    |   \ / __ \|  Y Y  \  |    |     / __ \|  | \/\___ \\  ___/|  | \/" -ForegroundColor Cyan
+Write-Host " |____|   \____/|__|_ \\___  >__|     |______  /(____  /__|_|  /  |____|    (____  /__|  /____  >\___  >__|   " -ForegroundColor Cyan
+Write-Host "                     \/    \/                \/      \/      \/                  \/           \/     \/        " -ForegroundColor Cyan
+Write-Host ""
+Write-Host "                        Poker Bam Parser" -ForegroundColor Magenta
+Write-Host ""
+
 
 # ===================== CHECK ADMIN =====================
 function Test-Admin {
@@ -133,3 +134,4 @@ $sw.Stop()
 $t = $sw.Elapsed.TotalMinutes
 Write-Host ""
 Write-Host "Elapsed Time $t Minutes" -ForegroundColor Yellow
+
