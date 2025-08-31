@@ -1,16 +1,13 @@
 $ErrorActionPreference = "SilentlyContinue"
 
 function Get-Signature {
-
     [CmdletBinding()]
      param (
         [string[]]$FilePath
     )
-
     $Existence = Test-Path -PathType "Leaf" -Path $FilePath
     $Authenticode = (Get-AuthenticodeSignature -FilePath $FilePath -ErrorAction SilentlyContinue).Status
     $Signature = "Invalid Signature (UnknownError)"
-
     if ($Existence) {
         if ($Authenticode -eq "Valid") {
             $Signature = "Valid Signature"
@@ -36,21 +33,16 @@ function Get-Signature {
 
 Clear-Host
 
-# ===================== BANNER =====================
-Clear-Host
-
 Write-Host "__________       __                  __________                  __________                                   " -ForegroundColor Cyan
 Write-Host "\______   \____ |  | __ ___________  \______   \_____    _____   \______   \_____ _______  ______ ___________ " -ForegroundColor Cyan
 Write-Host " |     ___/  _ \|  |/ // __ \_  __ \  |    |  _/\__  \  /     \   |     ___/\__  \\_  __ \/  ___// __ \_  __ \" -ForegroundColor Cyan
 Write-Host " |    |  (  <_> )    <\  ___/|  | \/  |    |   \ / __ \|  Y Y  \  |    |     / __ \|  | \/\___ \\  ___/|  | \/" -ForegroundColor Cyan
 Write-Host " |____|   \____/|__|_ \\___  >__|     |______  /(____  /__|_|  /  |____|    (____  /__|  /____  >\___  >__|   " -ForegroundColor Cyan
-Write-Host "                     \/    \/                \/      \/      \/                  \/           \/     \/        " -ForegroundColor Cyan
+Write-Host "                     \/    \/                \/      \/                  \/           \/     \/        " -ForegroundColor Cyan
 Write-Host ""
 Write-Host "                        Poker Bam Parser" -ForegroundColor Magenta
 Write-Host ""
 
-
-# ===================== CHECK ADMIN =====================
 function Test-Admin {
     $currentUser = New-Object Security.Principal.WindowsPrincipal $([Security.Principal.WindowsIdentity]::GetCurrent())
     $currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
@@ -62,7 +54,6 @@ if (!(Test-Admin)) {
     Exit
 }
 
-# ===================== START TIMER =====================
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
 if (!(Get-PSDrive -Name HKLM -PSProvider Registry)) {
@@ -81,26 +72,21 @@ Try {
 }
 
 $rpath = @("HKLM:\SYSTEM\CurrentControlSet\Services\bam\","HKLM:\SYSTEM\CurrentControlSet\Services\bam\state\")
-
 $UserTime = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").TimeZoneKeyName
 $UserBias = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").ActiveTimeBias
 $UserDay = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").DaylightBias
 
-# ===================== PARSE BAM DATA =====================
 $Bam = Foreach ($Sid in $Users) {
     foreach($rp in $rpath){
         $BamItems = Get-Item -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Property
         Write-Host -ForegroundColor Yellow "Extracting " -NoNewLine
         Write-Host -ForegroundColor Green "$($rp)UserSettings\$SID"
-
         Try {
             $objSID = New-Object System.Security.Principal.SecurityIdentifier($Sid)
             $User = $objSID.Translate([System.Security.Principal.NTAccount]).Value
         } Catch { $User="" }
-
         ForEach ($Item in $BamItems) {
             $Key = Get-ItemProperty -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $Item
-
             If($Key.length -eq 24) {
                 $Hex = [System.BitConverter]::ToString($Key[7..0]) -replace "-",""
                 $TimeLocal = Get-Date ([DateTime]::FromFileTime([Convert]::ToInt64($Hex, 16))) -Format "yyyy-MM-dd HH:mm:ss"
@@ -110,7 +96,6 @@ $Bam = Foreach ($Sid in $Users) {
                 $TimeUser = (Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))).AddMinutes($Bias) -Format "yyyy-MM-dd HH:mm:ss")
                 $f = Split-Path -Leaf $Item
                 $sig = Get-Signature -FilePath $Item
-
                 [PSCustomObject]@{
                     'Examiner Time' = $TimeLocal
                     'Last Execution Time (UTC)'= $TimeUTC
@@ -127,11 +112,12 @@ $Bam = Foreach ($Sid in $Users) {
     }
 }
 
-# ===================== OUTPUT =====================
+$Services = Get-Service | Where-Object { $_.Status -eq "Running" } | Select-Object Name, DisplayName, StartType, Status
+
 $Bam | Out-GridView -PassThru -Title "Poker Bam Parser - BAM entries $($Bam.count)  - User TimeZone: ($UserTime) -> ActiveBias: ( $Bias) - DayLightTime: ($Day)"
+$Services | Out-GridView -Title "Poker Bam Parser - Running Services"
 
 $sw.Stop()
 $t = $sw.Elapsed.TotalMinutes
 Write-Host ""
 Write-Host "Elapsed Time $t Minutes" -ForegroundColor Yellow
-
