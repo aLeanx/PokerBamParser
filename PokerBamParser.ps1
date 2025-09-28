@@ -1,123 +1,177 @@
-$ErrorActionPreference = "SilentlyContinue"
+<#
+Poker Bam Parser - Advanced Forensic Script
+Special pentru verificări pe FiveM / RAGEMP.
+Autor: ChatGPT & User
+#>
 
-function Get-Signature {
-    [CmdletBinding()]
-     param (
-        [string[]]$FilePath
-    )
-    $Existence = Test-Path -PathType "Leaf" -Path $FilePath
-    $Authenticode = (Get-AuthenticodeSignature -FilePath $FilePath -ErrorAction SilentlyContinue).Status
-    $Signature = "Invalid Signature (UnknownError)"
-    if ($Existence) {
-        if ($Authenticode -eq "Valid") {
-            $Signature = "Valid Signature"
-        }
-        elseif ($Authenticode -eq "NotSigned") {
-            $Signature = "Invalid Signature (NotSigned)"
-        }
-        elseif ($Authenticode -eq "HashMismatch") {
-            $Signature = "Invalid Signature (HashMismatch)"
-        }
-        elseif ($Authenticode -eq "NotTrusted") {
-            $Signature = "Invalid Signature (NotTrusted)"
-        }
-        elseif ($Authenticode -eq "UnknownError") {
-            $Signature = "Invalid Signature (UnknownError)"
-        }
-        return $Signature
-    } else {
-        $Signature = "File Was Not Found"
-        return $Signature
-    }
+param(
+    [switch]$UseParallel,
+    [string]$ExportCsv = "",
+    [string]$ExportJson = "",
+    [string]$ExportHtml = "$env:TEMP\PokerBamParser_Report.html",
+    [string]$ConfigFile = ".\bam_config.json",
+    [string]$LogFile = "$env:TEMP\PokerBamParser.log",
+    [switch]$VerboseOutput
+)
+
+# ===== Logger =====
+function Write-Log {
+    param($Message, [string]$Level = "INFO")
+    $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $line = "$ts [$Level] $Message"
+    Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
+    if ($VerboseOutput) { Write-Host $line }
 }
 
-Clear-Host
-
-Write-Host "__________       __                  __________                  __________                                   " -ForegroundColor Cyan
-Write-Host "\______   \____ |  | __ ___________  \______   \_____    _____   \______   \_____ _______  ______ ___________ " -ForegroundColor Cyan
-Write-Host " |     ___/  _ \|  |/ // __ \_  __ \  |    |  _/\__  \  /     \   |     ___/\__  \\_  __ \/  ___// __ \_  __ \" -ForegroundColor Cyan
-Write-Host " |    |  (  <_> )    <\  ___/|  | \/  |    |   \ / __ \|  Y Y  \  |    |     / __ \|  | \/\___ \\  ___/|  | \/" -ForegroundColor Cyan
-Write-Host " |____|   \____/|__|_ \\___  >__|     |______  /(____  /__|_|  /  |____|    (____  /__|  /____  >\___  >__|   " -ForegroundColor Cyan
-Write-Host "                     \/    \/                \/      \/                  \/           \/     \/        " -ForegroundColor Cyan
-Write-Host ""
-Write-Host "                        Poker Bam Parser" -ForegroundColor Magenta
-Write-Host ""
-
+# ===== Admin Check =====
 function Test-Admin {
-    $currentUser = New-Object Security.Principal.WindowsPrincipal $([Security.Principal.WindowsIdentity]::GetCurrent())
-    $currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+    $currentUser = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+}
+if (-not (Test-Admin)) {
+    Write-Warning "Please run this script as Administrator."
+    exit 1
 }
 
-if (!(Test-Admin)) {
-    Write-Warning "Please Run This Script as Admin."
-    Start-Sleep 10
-    Exit
-}
+Write-Log "Started Poker Bam Parser"
 
-$sw = [Diagnostics.Stopwatch]::StartNew()
+# ===== Default Config =====
+$KnownGtaExeNames = @("FiveM.exe","ragemp.exe","gta5.exe","FiveM_GTAProcess.exe")
+$KnownGtaPathsPatterns = @("FiveM","ragemp","CitizenFX")
 
-if (!(Get-PSDrive -Name HKLM -PSProvider Registry)) {
-    Try{ New-PSDrive -Name HKLM -PSProvider Registry -Root HKEY_LOCAL_MACHINE }
-    Catch{ Write-Warning "Error Mounting HKEY_Local_Machine" }
-}
-
-$bv = ("bam", "bam\State")
-Try {
-    $Users = foreach($ii in $bv) {
-        Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$($ii)\UserSettings\" | Select-Object -ExpandProperty PSChildName
+if (Test-Path $ConfigFile) {
+    try {
+        $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+        if ($cfg.ExeNames) { $KnownGtaExeNames = $cfg.ExeNames }
+        if ($cfg.PathPatterns) { $KnownGtaPathsPatterns = $cfg.PathPatterns }
+        Write-Log "Loaded config from $ConfigFile"
+    } catch {
+        Write-Warning "Invalid config file, using defaults."
     }
-} Catch {
-    Write-Warning "Error Parsing BAM Key. Likely unsupported Windows Version"
-    Exit
 }
 
-$rpath = @("HKLM:\SYSTEM\CurrentControlSet\Services\bam\","HKLM:\SYSTEM\CurrentControlSet\Services\bam\state\")
-$UserTime = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").TimeZoneKeyName
-$UserBias = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").ActiveTimeBias
-$UserDay = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").DaylightBias
+# ===== Signature Cache =====
+$SigCache = @{}
+function Get-Signature-Cached {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath -PathType Leaf)) {
+        return [PSCustomObject]@{ Status="FileNotFound"; Publisher=$null }
+    }
+    if ($SigCache.ContainsKey($FilePath)) { return $SigCache[$FilePath] }
+    try {
+        $sig = Get-AuthenticodeSignature -FilePath $FilePath -ErrorAction Stop
+        $obj = [PSCustomObject]@{
+            Status   = $sig.Status.ToString()
+            Publisher= if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null }
+        }
+    } catch { $obj = [PSCustomObject]@{ Status="UnknownError"; Publisher=$null } }
+    $SigCache[$FilePath] = $obj
+    return $obj
+}
+function Get-FileHash-Safe($FilePath) {
+    try { return (Get-FileHash -Path $FilePath -Algorithm SHA256 -ErrorAction Stop).Hash }
+    catch { return $null }
+}
 
-$Bam = Foreach ($Sid in $Users) {
-    foreach($rp in $rpath){
-        $BamItems = Get-Item -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Property
-        Write-Host -ForegroundColor Yellow "Extracting " -NoNewLine
-        Write-Host -ForegroundColor Green "$($rp)UserSettings\$SID"
-        Try {
-            $objSID = New-Object System.Security.Principal.SecurityIdentifier($Sid)
-            $User = $objSID.Translate([System.Security.Principal.NTAccount]).Value
-        } Catch { $User="" }
-        ForEach ($Item in $BamItems) {
-            $Key = Get-ItemProperty -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $Item
-            If($Key.length -eq 24) {
-                $Hex = [System.BitConverter]::ToString($Key[7..0]) -replace "-",""
-                $TimeLocal = Get-Date ([DateTime]::FromFileTime([Convert]::ToInt64($Hex, 16))) -Format "yyyy-MM-dd HH:mm:ss"
-                $TimeUTC = Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))) -Format "yyyy-MM-dd HH:mm:ss"
-                $Bias = -([convert]::ToInt32([Convert]::ToString($UserBias,2),2))
-                $Day = -([convert]::ToInt32([Convert]::ToString($UserDay,2),2))
-                $TimeUser = (Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))).AddMinutes($Bias) -Format "yyyy-MM-dd HH:mm:ss")
-                $f = Split-Path -Leaf $Item
-                $sig = Get-Signature -FilePath $Item
-                [PSCustomObject]@{
-                    'Examiner Time' = $TimeLocal
-                    'Last Execution Time (UTC)'= $TimeUTC
-                    'Last Execution User Time' = $TimeUser
-                    Application = $f
-                    Path = $Item
-                    Signature = $sig
-                    User = $User
-                    SID = $Sid
-                    Regpath = $rp
-                }
+# ===== Risk Score =====
+function Get-RiskScore {
+    param($entry)
+    $score = 0
+    if ($entry.SignatureStatus -ne "Valid") { $score += 2 }
+    if (-not $entry.SHA256) { $score += 1 }
+    if ($entry.LikelyGTAProcess) { $score += 2 }
+    if ($entry.ProcessRunning) { $score += 1 }
+    return $score
+}
+
+# ===== BAM Reading =====
+$rpath = @(
+ "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings",
+ "HKLM:\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings"
+)
+$Users = @()
+foreach ($p in $rpath) {
+    if (Test-Path $p) {
+        $Users += Get-ChildItem -Path $p -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName
+    }
+}
+$Users = $Users | Sort-Object -Unique
+
+$allResults = @()
+foreach ($sid in $Users) {
+    foreach ($rp in $rpath) {
+        $regUserPath = "$rp\$sid"
+        if (-not (Test-Path $regUserPath)) { continue }
+        $props = (Get-Item $regUserPath).Property
+        $UserName = try {
+            (New-Object System.Security.Principal.SecurityIdentifier($sid)).Translate([System.Security.Principal.NTAccount]).Value
+        } catch { $sid }
+
+        foreach ($Item in $props) {
+            $raw = (Get-ItemProperty $regUserPath).$Item
+            if (-not $raw -or $raw.Length -lt 8) { continue }
+            try {
+                $ticks = [BitConverter]::ToInt64($raw,0)
+                $dtUtc = [DateTime]::FromFileTimeUtc($ticks)
+            } catch { continue }
+
+            $f = Split-Path -Leaf $Item
+            $sig = Get-Signature-Cached $Item
+            $sha = Get-FileHash-Safe $Item
+            $isGta = ($KnownGtaExeNames -contains $f) -or ($KnownGtaPathsPatterns | ForEach-Object { $Item -match $_ })
+            $procRunning = try { (Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($f)) -ErrorAction SilentlyContinue) } catch { $null }
+            $procRunning = [bool]$procRunning
+
+            $obj = [PSCustomObject]@{
+                Application = $f
+                Path        = $Item
+                User        = $UserName
+                "Last Execution (UTC)" = $dtUtc.ToString("yyyy-MM-dd HH:mm:ss")
+                SignatureStatus = $sig.Status
+                Publisher   = $sig.Publisher
+                SHA256      = $sha
+                LikelyGTAProcess = $isGta
+                ProcessRunning   = $procRunning
             }
+            $obj | Add-Member -NotePropertyName RiskScore -NotePropertyValue (Get-RiskScore $obj)
+            $allResults += $obj
         }
     }
 }
 
-$Services = Get-Service | Where-Object { $_.Status -eq "Running" } | Select-Object Name, DisplayName, StartType, Status
+# ===== Rezumat rapid =====
+Write-Host "`n=== QUICK SUMMARY ===" -ForegroundColor Cyan
+$allResults | Sort-Object "Last Execution (UTC)" -Descending | Select-Object -First 10 Application,Path,"Last Execution (UTC)",SignatureStatus,RiskScore | Format-Table -AutoSize
 
-$Bam | Out-GridView -PassThru -Title "Poker Bam Parser - BAM entries $($Bam.count)  - User TimeZone: ($UserTime) -> ActiveBias: ( $Bias) - DayLightTime: ($Day)"
-$Services | Out-GridView -Title "Poker Bam Parser - Running Services"
+$runningSuspects = $allResults | Where-Object { $_.LikelyGTAProcess -and $_.ProcessRunning }
+if ($runningSuspects) {
+    Write-Host "`n⚠️  Suspect processes running:" -ForegroundColor Red
+    $runningSuspects | Select-Object Application,Path,User,SignatureStatus | Format-Table -AutoSize
+}
 
-$sw.Stop()
-$t = $sw.Elapsed.TotalMinutes
-Write-Host ""
-Write-Host "Elapsed Time $t Minutes" -ForegroundColor Yellow
+# ===== Export =====
+if ($ExportCsv) { $allResults | Export-Csv $ExportCsv -NoTypeInformation -Force }
+if ($ExportJson) { $allResults | ConvertTo-Json -Depth 5 | Set-Content $ExportJson -Force }
+if ($ExportHtml) {
+    $rows = foreach ($r in $allResults) {
+        $cls = if ($r.SignatureStatus -eq "Valid") { "style='color:lime;'" }
+               elseif ($r.SignatureStatus -eq "NotSigned") { "style='color:red;'" }
+               else { "style='color:orange;'" }
+        "<tr><td>$($r.Application)</td><td>$($r.Path)</td><td>$($r.User)</td><td>$($r.'Last Execution (UTC)')</td><td $cls>$($r.SignatureStatus)</td><td>$($r.RiskScore)</td></tr>"
+    }
+    $html = @"
+<html><head><style>
+body{background:#121212;color:#eee;font-family:Arial;}
+table{border-collapse:collapse;width:100%;}
+th,td{border:1px solid #444;padding:5px;}
+th{background:#333;}
+</style></head><body>
+<h2>Poker Bam Parser Report</h2>
+<table>
+<tr><th>Application</th><th>Path</th><th>User</th><th>Last Execution (UTC)</th><th>Signature</th><th>Risk</th></tr>
+$($rows -join "`n")
+</table></body></html>
+"@
+    Set-Content -Path $ExportHtml -Value $html -Force
+    Write-Host "`n📄 HTML report: $ExportHtml" -ForegroundColor Green
+}
